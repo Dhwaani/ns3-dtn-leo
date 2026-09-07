@@ -25,7 +25,6 @@ models. This module fills that gap and targets the 6G non-terrestrial-network
    across shadow arcs instead of forwarding blindly, trading a little latency
    for energy safety. This is the differentiating research question.
 
-See [`docs/NOVELTY.md`](docs/NOVELTY.md) and [`docs/LITERATURE.md`](docs/LITERATURE.md).
 
 ## Repository layout
 
