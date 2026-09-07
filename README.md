@@ -73,8 +73,7 @@ bundle instead of forwarding it). Each bundle's CGR route lights up before it is
 flown: solid for the hops already taken, pale cyan for the planned remainder.
 Open the HTML file in a browser to run the built-in analytic constellation, or
 load a JSON export of a real ns-3 run to replay it — the example writes
-`dtn-leo-events.json` automatically via the header-only `JsonTraceLogger`. Data
-schema and trace hooks are in [`viz/README.md`](viz/README.md);
+`dtn-leo-events.json` automatically via the header-only `JsonTraceLogger`.
 [`viz/sample-data.json`](viz/sample-data.json) is a ready-to-load example.
 
 ## License
