@@ -1,0 +1,694 @@
+<!--
+  dtn-leo-globe — a 3D orbital-network console for the dtn-leo ns-3 module.
+  SPDX-License-Identifier: GPL-2.0-only
+
+  Self-contained: only dependency is three.js (from a CDN). No build step, no
+  texture files, no server. Open this file in a browser, or host it on GitHub
+  Pages. It runs a built-in analytic constellation by default and can also
+  replay real ns-3 simulation output (see viz/README.md for the JSON schema).
+
+  The physics mirrors the ns-3 module so the demo is faithful to the sim:
+    - circular-orbit propagation with the same Earth GM (mu) and radius,
+    - cylindrical Earth-shadow eclipse (matches EclipsePowerModel),
+    - line-of-sight contacts with Earth-sphere occlusion (matches
+      ContactPlanGenerator),
+    - eclipse-aware store-carry-forward: low-battery satellites in shadow
+      CARRY non-urgent bundles instead of forwarding (matches ScfScheduler),
+      with EXPEDITED / near-expiry overrides.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>dtn-leo · orbital network console</title>
+<style>
+  :root {
+    --space:        #05070d;
+    --space-2:      #0a0e18;
+    --panel:        rgba(12,17,28,0.72);
+    --panel-brd:    rgba(120,150,200,0.16);
+    --ink:          #e8eefb;
+    --ink-dim:      #8fa0bd;
+    --ink-faint:    #5a6b80;
+    --sun:          #ffd27f;   /* sunlit satellite */
+    --shadow:       #46587a;   /* eclipsed satellite */
+    --isl:          #39d0d8;   /* active inter-satellite link */
+    --access:       #7ee787;   /* ground access link */
+    --route:        #ffffff;   /* highlighted CGR route */
+    --exp:          #ff5c8a;   /* EXPEDITED bundle */
+    --norm:         #6cd4ff;   /* NORMAL bundle */
+    --bulk:         #ffb454;   /* BULK bundle */
+    --warn:         #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--space); color:var(--ink);
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing:antialiased; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; }
+
+  .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; }
+
+  /* ---- header ---- */
+  .brand { position:fixed; top:18px; left:20px; z-index:5; pointer-events:none; }
+  .brand h1 { margin:0; font-size:15px; font-weight:600; letter-spacing:0.2px; }
+  .brand p  { margin:3px 0 0; font-size:12px; color:var(--ink-dim); max-width:34ch; line-height:1.45; }
+
+  /* ---- telemetry rail ---- */
+  .rail { position:fixed; top:74px; left:20px; z-index:5; width:212px;
+    background:var(--panel); border:1px solid var(--panel-brd); border-radius:12px;
+    padding:14px 14px 6px; backdrop-filter: blur(9px); }
+  .rail h2 { margin:0 0 10px; font-size:11px; font-weight:600; color:var(--ink-dim);
+    letter-spacing:0.4px; }
+  .kpi { display:flex; align-items:baseline; justify-content:space-between;
+    padding:6px 0; border-bottom:1px solid rgba(120,150,200,0.08); }
+  .kpi:last-child { border-bottom:0; }
+  .kpi .lab { font-size:12px; color:var(--ink-dim); }
+  .kpi .val { font-size:15px; color:var(--ink); }
+  .kpi .val.big { font-size:20px; }
+  .kpi .val.accent { color:var(--isl); }
+  .kpi .val.warn { color:var(--bulk); }
+
+  /* ---- legend ---- */
+  .legend { position:fixed; top:74px; right:20px; z-index:5; width:190px;
+    background:var(--panel); border:1px solid var(--panel-brd); border-radius:12px;
+    padding:12px 14px; backdrop-filter: blur(9px); }
+  .legend h2 { margin:0 0 9px; font-size:11px; font-weight:600; color:var(--ink-dim);
+    letter-spacing:0.4px; }
+  .lrow { display:flex; align-items:center; gap:9px; padding:4px 0; font-size:12px; color:var(--ink); }
+  .dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
+  .bar { width:16px; height:3px; border-radius:2px; flex:0 0 auto; }
+  .legend .sub { margin-top:9px; padding-top:9px; border-top:1px solid rgba(120,150,200,0.10);
+    font-size:11px; color:var(--ink-dim); line-height:1.5; }
+
+  /* ---- transport bar ---- */
+  .transport { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); z-index:6;
+    display:flex; align-items:center; gap:14px;
+    background:var(--panel); border:1px solid var(--panel-brd); border-radius:14px;
+    padding:10px 16px; backdrop-filter: blur(9px); max-width:calc(100vw - 40px); }
+  button.ctl { appearance:none; background:rgba(120,150,200,0.10); color:var(--ink);
+    border:1px solid var(--panel-brd); border-radius:9px; height:34px; min-width:34px;
+    padding:0 12px; font-size:13px; cursor:pointer; display:inline-flex; align-items:center;
+    gap:7px; }
+  button.ctl:hover { background:rgba(120,150,200,0.18); }
+  button.ctl:focus-visible { outline:2px solid var(--isl); outline-offset:2px; }
+  button.ctl.play { background:var(--isl); color:#04202a; border-color:transparent; font-weight:600; }
+  .clock { min-width:118px; }
+  .clock .t { font-size:15px; }
+  .clock .d { font-size:11px; color:var(--ink-dim); }
+  .speed { display:flex; align-items:center; gap:8px; }
+  .speed input { width:118px; accent-color:var(--isl); }
+  .scrub { display:flex; align-items:center; gap:8px; flex:1 1 200px; min-width:120px; }
+  .scrub input { width:100%; accent-color:var(--isl); }
+  .toggles { display:flex; gap:7px; }
+  .toggles button { font-size:11px; height:30px; padding:0 9px; }
+  .toggles button[aria-pressed="true"] { background:rgba(57,208,216,0.16); border-color:var(--isl); color:var(--isl); }
+
+  .loadbtn { position:fixed; right:20px; bottom:20px; z-index:6; }
+  .hint { position:fixed; left:20px; bottom:20px; z-index:5; font-size:11px; color:var(--ink-faint);
+    max-width:30ch; line-height:1.5; }
+  #file { display:none; }
+
+  @media (max-width: 760px) {
+    .rail, .legend { display:none; }
+    .brand p { display:none; }
+    .transport { flex-wrap:wrap; justify-content:center; bottom:12px; padding:9px 12px; gap:9px; }
+    .scrub { order:5; flex-basis:100%; }
+    .hint { display:none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button.ctl { transition:none; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <div class="brand">
+    <h1>dtn-leo · orbital network console</h1>
+    <p>Bundle Protocol v7 · Contact Graph Routing · eclipse-aware store-carry-forward over a LEO constellation.</p>
+  </div>
+
+  <section class="rail" aria-label="Telemetry">
+    <h2>Telemetry</h2>
+    <div class="kpi"><span class="lab">Delivery ratio</span><span class="val big accent mono" id="k-ratio">—</span></div>
+    <div class="kpi"><span class="lab">Delivered</span><span class="val mono" id="k-deliv">0</span></div>
+    <div class="kpi"><span class="lab">In transit</span><span class="val mono" id="k-transit">0</span></div>
+    <div class="kpi"><span class="lab">Generated</span><span class="val mono" id="k-gen">0</span></div>
+    <div class="kpi"><span class="lab">Carry / defer events</span><span class="val warn mono" id="k-defer">0</span></div>
+    <div class="kpi"><span class="lab">Sats in eclipse</span><span class="val mono" id="k-ecl">0</span></div>
+    <div class="kpi"><span class="lab">Active contacts</span><span class="val mono" id="k-links">0</span></div>
+    <div class="kpi"><span class="lab">CGR route hops</span><span class="val accent mono" id="k-hops">0</span></div>
+  </section>
+
+  <aside class="legend" aria-label="Legend">
+    <h2>Legend</h2>
+    <div class="lrow"><span class="dot" style="background:var(--sun)"></span>Satellite · sunlit (charging)</div>
+    <div class="lrow"><span class="dot" style="background:var(--shadow)"></span>Satellite · eclipse (carrying)</div>
+    <div class="lrow"><span class="dot" style="background:var(--access)"></span>Ground station</div>
+    <div class="lrow"><span class="bar" style="background:var(--isl)"></span>Inter-satellite contact</div>
+    <div class="lrow"><span class="bar" style="background:var(--access)"></span>Ground access</div>
+    <div class="lrow"><span class="bar" style="background:var(--route)"></span>Bundle route · flown</div>
+    <div class="lrow"><span class="bar" style="background:#9fe8ff;opacity:.6"></span>Bundle route · planned (CGR)</div>
+    <div class="sub">
+      <div class="lrow" style="padding:2px 0"><span class="dot" style="background:var(--exp)"></span>EXPEDITED</div>
+      <div class="lrow" style="padding:2px 0"><span class="dot" style="background:var(--norm)"></span>NORMAL</div>
+      <div class="lrow" style="padding:2px 0"><span class="dot" style="background:var(--bulk)"></span>BULK</div>
+    </div>
+  </aside>
+
+  <div class="transport" role="group" aria-label="Playback">
+    <button class="ctl play" id="btn-play" aria-label="Pause">❚❚ Pause</button>
+    <div class="clock">
+      <div class="t mono" id="clock-t">00:00:00</div>
+      <div class="d">sim time · <span id="clock-mult" class="mono">60×</span></div>
+    </div>
+    <div class="speed" title="Time multiplier">
+      <span style="font-size:11px;color:var(--ink-dim)">speed</span>
+      <input id="speed" type="range" min="1" max="600" step="1" value="60" aria-label="Time multiplier" />
+    </div>
+    <div class="scrub" title="Scrub through the orbit">
+      <span style="font-size:11px;color:var(--ink-dim)">t</span>
+      <input id="scrub" type="range" min="0" max="6000" step="1" value="0" aria-label="Scrub time" />
+    </div>
+    <div class="toggles">
+      <button class="ctl" id="t-orbits" aria-pressed="true">orbits</button>
+      <button class="ctl" id="t-links"  aria-pressed="true">links</button>
+      <button class="ctl" id="t-shadow" aria-pressed="true">shadow</button>
+    </div>
+  </div>
+
+  <button class="ctl loadbtn" id="btn-load">⤒ Load sim data (JSON)</button>
+  <input id="file" type="file" accept="application/json,.json" />
+  <p class="hint" id="hint">Drag to orbit · scroll to zoom · built-in analytic constellation. Load ns-3 output to replay a real run.</p>
+
+<script>
+"use strict";
+(function () {
+
+// ------------------------------------------------------------------ constants
+// Physical constants match the ns-3 module (kEarthR, kMu).
+const RE   = 6.371e6;          // Earth radius (m)
+const MU   = 3.986004418e14;   // Earth GM (m^3/s^2)
+const C    = 299792458;        // speed of light (m/s)
+const SCENE = 1 / RE;          // 1 scene unit = 1 Earth radius
+
+// Sunlit direction (unit). Day/night and eclipse both use this.
+const SUN = vnorm({x:1, y:0.18, z:0.35});
+
+const ISL_RANGE  = 5.0e6;      // max inter-satellite link range (m)
+const GND_RANGE  = 3.2e6;      // max ground<->sat access range (m)
+const FWD_PERIOD = 6.0;        // s of sim time between forwarding attempts
+const GEN_PERIOD = 9.0;        // s between new bundles
+const BUNDLE_TTL = 900.0;      // bundle lifetime (s)
+const HOP_ANIM   = 0.55;       // wall-seconds to animate one hop
+const SOC_RELEASE= 0.35;       // below this SOC, carry non-urgent bundles
+const NEAR_EXPIRY= 120.0;      // s-to-expiry override for the energy gate
+
+// ------------------------------------------------------------------ tiny vec3
+function vec(x,y,z){ return {x:x,y:y,z:z}; }
+function vadd(a,b){ return {x:a.x+b.x, y:a.y+b.y, z:a.z+b.z}; }
+function vsub(a,b){ return {x:a.x-b.x, y:a.y-b.y, z:a.z-b.z}; }
+function vscale(a,s){ return {x:a.x*s, y:a.y*s, z:a.z*s}; }
+function vdot(a,b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
+function vlen(a){ return Math.sqrt(a.x*a.x + a.y*a.y + a.z*a.z); }
+function vnorm(a){ const L=vlen(a)||1; return {x:a.x/L, y:a.y/L, z:a.z/L}; }
+function vcross(a,b){ return {x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x}; }
+function vlerp(a,b,t){ return {x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t, z:a.z+(b.z-a.z)*t}; }
+
+// ------------------------------------------------------------------ canvas
+const stage = document.getElementById('stage');
+const canvas = document.createElement('canvas');
+stage.appendChild(canvas);
+const ctx = canvas.getContext('2d');
+let W=0, H=0, DPR=1, CX=0, CY=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W*DPR; canvas.height = H*DPR;
+  canvas.style.width = W+'px'; canvas.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W/2; CY = H/2;
+}
+window.addEventListener('resize', resize); resize();
+
+// starfield (fixed screen-space dots)
+let stars=[];
+function seedStars(){ stars=[]; const n=Math.round(W*H/9000);
+  for(let i=0;i<n;i++) stars.push({x:Math.random()*W, y:Math.random()*H, r:Math.random()*1.2+0.2, a:Math.random()*0.5+0.2}); }
+seedStars();
+window.addEventListener('resize', seedStars);
+
+// ------------------------------------------------------------------ camera
+const cam = { theta:0.9, phi:1.15, zoom:1, tth:0.9, tph:1.15, tz:1 };
+let bf, br, bu, baseScale, scale; // camera basis + pixel scale (px per Earth radius)
+function updateCamera(){
+  cam.theta += (cam.tth-cam.theta)*0.15;
+  cam.phi   += (cam.tph-cam.phi)*0.15;
+  cam.zoom  += (cam.tz -cam.zoom)*0.15;
+  const s=Math.sin(cam.phi);
+  bf = vnorm({ x:s*Math.cos(cam.theta), y:Math.cos(cam.phi), z:s*Math.sin(cam.theta) }); // toward camera
+  br = vnorm(vcross({x:0,y:1,z:0}, bf));
+  bu = vcross(bf, br);
+  baseScale = Math.min(W,H)*0.30;
+  scale = baseScale*cam.zoom;
+}
+// project a world point (in Earth radii) -> screen + depth + occlusion
+function project(P){
+  const cx=vdot(P,br), cy=vdot(P,bu), cz=vdot(P,bf);
+  const rr2=cx*cx+cy*cy;
+  let occ=false;
+  if(rr2<1){ occ = cz < Math.sqrt(1-rr2); } // behind the front surface of the unit sphere
+  return { x:CX+cx*scale, y:CY-cy*scale, cz:cz, occ:occ, rr2:rr2 };
+}
+
+// ------------------------------------------------------------------ orbital model (matches ns-3 example oracle)
+function defaultScenario(){
+  const nodes=[]; let id=0;
+  const planes=6, perPlane=8, altKm=780, incl=70*Math.PI/180;
+  for(let p=0;p<planes;p++){
+    const raan=(p/planes)*2*Math.PI;
+    for(let s=0;s<perPlane;s++){
+      const r=RE+altKm*1e3;
+      nodes.push({ id:id++, type:'sat', r:r, omega:Math.sqrt(MU/(r*r*r)),
+        phase:(s/perPlane)*2*Math.PI + p*0.22, raan:raan, incl:incl,
+        soc:0.6+0.4*Math.random() });
+    }
+  }
+  nodes.push(groundNode(id++, 37.4*Math.PI/180, -122*Math.PI/180));
+  nodes.push(groundNode(id++, 1.3*Math.PI/180, 103.8*Math.PI/180));
+  return { nodes:nodes, srcId:id-2, dstId:id-1, meta:{label:'built-in analytic constellation'} };
+}
+function groundNode(id, lat, lon){
+  return { id:id, type:'ground', lat:lat, lon:lon,
+    pos:vec(RE*Math.cos(lat)*Math.cos(lon), RE*Math.sin(lat), RE*Math.cos(lat)*Math.sin(lon)) };
+}
+function nodePos(n,t){
+  if(n.type==='ground') return n.pos;
+  const th=n.phase+n.omega*t;
+  let x=n.r*Math.cos(th), y=n.r*Math.sin(th);
+  const y2=y*Math.cos(n.incl), z2=y*Math.sin(n.incl);
+  y=y2; const z=z2;
+  const xr=x*Math.cos(n.raan)-y*Math.sin(n.raan);
+  const yr=x*Math.sin(n.raan)+y*Math.cos(n.raan);
+  return vec(xr, z, yr);
+}
+function inEclipse(posM){
+  const d=vdot(posM,SUN); if(d>=0) return false;
+  const perp=vlen(vsub(posM, vscale(SUN,d)));
+  return perp<RE;
+}
+function hasLOS(a,b){
+  const ab=vsub(b,a); const len2=vdot(ab,ab);
+  if(len2===0) return true;
+  let tt=-vdot(a,ab)/len2;
+  if(tt<=0 || tt>=1) return true;          // closest point is at/beyond an endpoint — nothing between them dips below the surface
+  const closest=vadd(a, vscale(ab,tt));
+  return vlen(closest) >= RE*0.999;         // only a through-Earth chord blocks the link
+}
+function subSat(posM){ return vnorm(posM); }
+function contactAt(u,v,t){
+  const pu=nodePos(nodeById[u],t), pv=nodePos(nodeById[v],t);
+  const range=vlen(vsub(pu,pv));
+  const cap=(nodeById[u].type==='ground'||nodeById[v].type==='ground')?GND_RANGE:ISL_RANGE;
+  if(range<=cap && hasLOS(pu,pv)) return {ok:true, owlt:range/C};
+  return {ok:false};
+}
+// CGR-style earliest-delivery route over the deterministic contact graph.
+function planRoute(srcId,dstId,t0){
+  const HORIZON=1800, STEP=20, MAXHOPS=12;
+  let cur=srcId, t=t0; const path=[srcId], visited=new Set([srcId]);
+  for(let hop=0;hop<MAXHOPS;hop++){
+    let chosen=null, chosenT=Infinity, chosenOwlt=0;
+    for(let scan=0;scan<=HORIZON;scan+=STEP){
+      const tt=t+scan;
+      const cd=contactAt(cur,dstId,tt);
+      if(cd.ok){ chosen=dstId; chosenT=tt; chosenOwlt=cd.owlt; break; }
+      const dstDir=subSat(nodePos(nodeById[dstId],tt));
+      let localBest=null, localScore=-2, localOwlt=0;
+      for(let i=0;i<S.nodes.length;i++){
+        const n=S.nodes[i];
+        if(n.id===cur||visited.has(n.id)||n.id===dstId) continue;
+        const c=contactAt(cur,n.id,tt); if(!c.ok) continue;
+        const score=vdot(subSat(nodePos(n,tt)), dstDir);
+        if(score>localScore){ localScore=score; localBest=n.id; localOwlt=c.owlt; }
+      }
+      if(localBest!==null){ chosen=localBest; chosenT=tt; chosenOwlt=localOwlt; break; }
+    }
+    if(chosen===null) break;
+    path.push(chosen); visited.add(chosen);
+    if(chosen===dstId) return path;
+    cur=chosen; t=chosenT+chosenOwlt;
+  }
+  return path.length>1?path:null;
+}
+
+// ------------------------------------------------------------------ scenario + orbit rings
+let S = defaultScenario();
+let nodeById={};
+let rings=[]; // arrays of unit-space points per plane
+function indexScenario(){
+  nodeById={}; S.nodes.forEach(n=>nodeById[n.id]=n);
+  rings=[]; const seen=new Set();
+  S.nodes.filter(n=>n.type==='sat').forEach(n=>{
+    const key=n.r.toFixed(0)+'|'+n.raan.toFixed(3)+'|'+n.incl.toFixed(3);
+    if(seen.has(key)) return; seen.add(key);
+    const pts=[]; const steps=128; const period=2*Math.PI/n.omega;
+    for(let i=0;i<=steps;i++){ pts.push(vscale(nodePos(n,(i/steps)*period), SCENE)); }
+    rings.push(pts);
+  });
+}
+indexScenario();
+
+// ------------------------------------------------------------------ simulation state
+const PRIO_COL = { EXPEDITED:'#ff5c8a', NORMAL:'#6cd4ff', BULK:'#ffb454' };
+let bundles=[]; let bundleSeq=0;
+let simT=0, playing=true, mult=60, lastFwd=0, lastGen=0;
+let kpi={gen:0,deliv:0,defer:0};
+let show={orbits:true,links:true,shadow:true};
+let replay=null;
+
+// ------------------------------------------------------------------ forwarding
+function tryForward(){
+  bundles.forEach(bd=>{
+    if(bd.delivered||bd.anim) return;
+    if(!bd.plan||bd.plan.length<2){ bd.plan=planRoute(bd.holder,S.dstId,simT)||[bd.holder]; bd.planIdx=0; }
+    if(bd.plan[bd.planIdx]!==bd.holder){ const gi=bd.plan.indexOf(bd.holder); bd.planIdx=gi>=0?gi:0; }
+    let nextHop=bd.plan[bd.planIdx+1];
+    if(nextHop===undefined){ const rp=planRoute(bd.holder,S.dstId,simT); if(rp&&rp.length>1){bd.plan=rp;bd.planIdx=0;nextHop=bd.plan[1];} else return; }
+    if(!contactAt(bd.holder,nextHop,simT).ok){
+      bd.waitT=(bd.waitT||0)+FWD_PERIOD;
+      if(bd.waitT>180){ bd.waitT=0; const rp=planRoute(bd.holder,S.dstId,simT); if(rp&&rp.length>1){bd.plan=rp;bd.planIdx=0;} }
+      return;
+    }
+    bd.waitT=0;
+    const holder=nodeById[bd.holder]; const hpos=nodePos(holder,simT);
+    const ttl=BUNDLE_TTL-(simT-bd.bornT);
+    const urgent=bd.priority==='EXPEDITED'||ttl<NEAR_EXPIRY;
+    const holderDark=holder.type==='sat'&&inEclipse(hpos);
+    const lowBatt=holder.type==='sat'&&holder.soc<SOC_RELEASE;
+    if(holderDark&&lowBatt&&!urgent){ bd.carried=true; kpi.defer++; return; }
+    bd.carried=false;
+    bd.anim={ from:vscale(hpos,SCENE), to:vscale(nodePos(nodeById[nextHop],simT),SCENE), t0:performance.now()/1000 };
+    bd.holder=nextHop; bd.planIdx++;
+    if(nextHop===S.dstId) bd._arriving=true;
+  });
+}
+function generateBundle(){
+  const roll=Math.random();
+  const priority = roll<0.15?'EXPEDITED':(roll<0.55?'NORMAL':'BULK');
+  const plan=planRoute(S.srcId,S.dstId,simT)||[S.srcId];
+  bundles.push({ id:bundleSeq++, priority:priority, holder:S.srcId, dest:S.dstId,
+    bornT:simT, anim:null, carried:false, delivered:false, plan:plan, planIdx:0, waitT:0, wpos:vscale(nodePos(nodeById[S.srcId],simT),SCENE) });
+  kpi.gen++;
+}
+
+// ------------------------------------------------------------------ replay
+function drainReplay(){
+  if(!replay) return;
+  while(replay.idx<replay.events.length && replay.events[replay.idx].tSec<=simT){
+    const e=replay.events[replay.idx++];
+    if(e.type==='tx'){
+      let bd=bundles.find(b=>b.id===e.bundleId && !b.delivered);
+      if(!bd){
+        const plan=(replay.paths&&replay.paths[e.bundleId])?replay.paths[e.bundleId]:[e.from];
+        bd={ id:e.bundleId, priority:e.priority||'NORMAL', holder:e.from, dest:S.dstId, bornT:e.tSec,
+             anim:null, carried:false, delivered:false, plan:plan, planIdx:0, wpos:vscale(nodePos(nodeById[e.from],simT),SCENE) };
+        bundles.push(bd); kpi.gen++;
+      }
+      bd.carried=false;
+      bd.anim={ from:vscale(nodePos(nodeById[e.from],simT),SCENE), to:vscale(nodePos(nodeById[e.to],simT),SCENE), t0:performance.now()/1000 };
+      bd.holder=e.to;
+      const gi=bd.plan?bd.plan.indexOf(e.to):-1; bd.planIdx=gi>=0?gi:(bd.planIdx+1);
+    } else if(e.type==='defer'){
+      kpi.defer++; const bd=bundles.find(b=>b.id===e.bundleId && !b.delivered); if(bd) bd.carried=true;
+    } else if(e.type==='deliver'){
+      const bd=bundles.find(b=>b.id===e.bundleId && !b.delivered);
+      if(bd){ bd.delivered=true; kpi.deliv++; bd._done=true; }
+    }
+  }
+}
+
+// ------------------------------------------------------------------ drawing
+function draw(){
+  // background
+  ctx.fillStyle='#05070d'; ctx.fillRect(0,0,W,H);
+  ctx.save();
+  for(const st of stars){ ctx.globalAlpha=st.a; ctx.fillStyle='#9fb3d9'; ctx.beginPath(); ctx.arc(st.x,st.y,st.r,0,7); ctx.fill(); }
+  ctx.restore();
+
+  // atmosphere glow
+  const glow=ctx.createRadialGradient(CX,CY,scale*0.9, CX,CY,scale*1.35);
+  glow.addColorStop(0,'rgba(43,108,255,0.20)'); glow.addColorStop(1,'rgba(43,108,255,0)');
+  ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(CX,CY,scale*1.35,0,7); ctx.fill();
+
+  // Earth disc with day/night shading toward the sun
+  const sr=vdot(SUN,br), su=vdot(SUN,bu);
+  const l2=Math.hypot(sr,su)||1; const lx=sr/l2, ly=-su/l2;
+  const gx=CX+lx*scale*0.55, gy=CY+ly*scale*0.55;
+  const eg=ctx.createRadialGradient(gx,gy,scale*0.1, CX,CY,scale*1.02);
+  if(show.shadow){ eg.addColorStop(0,'#1a4a74'); eg.addColorStop(0.5,'#103254'); eg.addColorStop(1,'#061224'); }
+  else { eg.addColorStop(0,'#14456e'); eg.addColorStop(1,'#0c2c48'); }
+  ctx.fillStyle=eg; ctx.beginPath(); ctx.arc(CX,CY,scale,0,7); ctx.fill();
+  // Earth rim
+  ctx.lineWidth=1; ctx.strokeStyle='rgba(90,140,200,0.35)'; ctx.beginPath(); ctx.arc(CX,CY,scale,0,7); ctx.stroke();
+
+  // graticule (front-facing segments only)
+  if(true){
+    ctx.strokeStyle='rgba(31,78,121,0.45)'; ctx.lineWidth=1;
+    // parallels
+    for(let lat=-60;lat<=60;lat+=30){
+      const la=lat*Math.PI/180; drawSpherePoly(latLine(la), false);
+    }
+    // meridians
+    for(let lon=0;lon<360;lon+=30){
+      const lo=lon*Math.PI/180; drawSpherePoly(lonLine(lo), false);
+    }
+  }
+
+  // orbit rings
+  if(show.orbits){
+    for(const ring of rings) drawRing(ring);
+  }
+
+  // collect projected nodes
+  const proj={}; S.nodes.forEach(n=>{ proj[n.id]=project(vscale(nodePos(n,simT),SCENE)); });
+
+  // links
+  let linkCount=0;
+  if(show.links){
+    for(let i=0;i<S.nodes.length;i++){
+      for(let j=i+1;j<S.nodes.length;j++){
+        const a=S.nodes[i], b=S.nodes[j];
+        const pa=nodePos(a,simT), pb=nodePos(b,simT);
+        const range=vlen(vsub(pa,pb));
+        const ground=a.type==='ground'||b.type==='ground';
+        const cap=ground?GND_RANGE:ISL_RANGE;
+        if(range<=cap && hasLOS(pa,pb)){
+          linkCount++;
+          const A=proj[a.id], B=proj[b.id];
+          if(A.occ&&B.occ) continue;
+          ctx.globalAlpha=(A.occ||B.occ)?0.18:0.6;
+          ctx.strokeStyle=ground?'#7ee787':'#39d0d8'; ctx.lineWidth=1;
+          ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+        }
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // satellites (+ SOC integration), ground stations
+  let eclCount=0;
+  const dtScaled = lastDt*mult/60;
+  S.nodes.forEach(n=>{
+    const pj=proj[n.id];
+    if(n.type==='ground'){
+      if(pj.occ) return;
+      ctx.fillStyle='#7ee787'; ctx.beginPath(); ctx.arc(pj.x,pj.y,4,0,7); ctx.fill();
+      ctx.strokeStyle='rgba(126,231,135,0.5)'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(pj.x,pj.y,7,0,7); ctx.stroke();
+      return;
+    }
+    const dark=inEclipse(nodePos(n,simT));
+    if(dark){ eclCount++; n.soc=Math.max(0,n.soc-0.02*dtScaled); } else { n.soc=Math.min(1,n.soc+0.03*dtScaled); }
+    if(pj.occ) return; // hidden behind Earth
+    const rad=(3.0+0.7*pj.cz)*(0.75+0.5*n.soc);
+    ctx.fillStyle=dark?'#46587a':'#ffd27f';
+    ctx.beginPath(); ctx.arc(pj.x,pj.y,Math.max(1.5,rad),0,7); ctx.fill();
+    if(!dark){ ctx.globalAlpha=0.25; ctx.fillStyle='#ffd27f'; ctx.beginPath(); ctx.arc(pj.x,pj.y,rad*2.0,0,7); ctx.fill(); ctx.globalAlpha=1; }
+  });
+
+  // generation / forwarding cadence
+  if(!replay){
+    if(simT-lastGen>=GEN_PERIOD){ lastGen=simT; generateBundle(); }
+    if(simT-lastFwd>=FWD_PERIOD){ lastFwd=simT; tryForward(); }
+  } else { drainReplay(); }
+
+  // bundles
+  const now=performance.now()/1000;
+  let transit=0;
+  bundles.forEach(bd=>{
+    if(bd.delivered) return; transit++;
+    if(bd.anim){
+      const u=Math.min(1,(now-bd.anim.t0)/HOP_ANIM);
+      bd.wpos=vlerp(bd.anim.from,bd.anim.to,u);
+      if(u>=1){ bd.anim=null; if(bd._arriving){ bd.delivered=true; kpi.deliv++; bd._done=true; } }
+    } else {
+      bd.wpos=vscale(nodePos(nodeById[bd.holder],simT),SCENE);
+      if(!replay && simT-bd.bornT>BUNDLE_TTL){ bd._done=true; }
+    }
+    const pj=project(bd.wpos);
+    if(pj.occ) return;
+    const pulseScale = bd.carried ? (0.85+0.4*Math.sin(now*6)) : 1;
+    ctx.fillStyle=PRIO_COL[bd.priority]||'#6cd4ff';
+    ctx.beginPath(); ctx.arc(pj.x,pj.y,4.2*pulseScale,0,7); ctx.fill();
+    ctx.globalAlpha=0.3; ctx.beginPath(); ctx.arc(pj.x,pj.y,8*pulseScale,0,7); ctx.fill(); ctx.globalAlpha=1;
+  });
+
+  // route overlay for the featured bundle
+  let featHops=0;
+  const feat=liveRouteBundle();
+  if(feat&&feat.plan&&feat.plan.length>=2){
+    const P=feat.plan; featHops=P.length-1;
+    const idx=Math.max(0,Math.min(feat.planIdx,P.length-1));
+    const V=id=>project(vscale(nodePos(nodeById[id],simT),SCENE));
+    // planned remainder (dim cyan)
+    ctx.strokeStyle='rgba(159,232,255,0.5)'; ctx.lineWidth=1.5;
+    for(let k=idx;k<P.length-1;k++){ const A=V(P[k]),B=V(P[k+1]); ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke(); }
+    // flown portion (bright white)
+    ctx.strokeStyle='rgba(255,255,255,0.9)'; ctx.lineWidth=2;
+    for(let k=0;k<idx;k++){ const A=V(P[k]),B=V(P[k+1]); ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke(); }
+    // pulse riding the next hop
+    if(idx<P.length-1){ const A=V(P[idx]),B=V(P[idx+1]); const u=(now*0.6)%1;
+      const px=A.x+(B.x-A.x)*u, py=A.y+(B.y-A.y)*u;
+      ctx.fillStyle='#ffffff'; ctx.beginPath(); ctx.arc(px,py,3.5,0,7); ctx.fill(); }
+  }
+
+  // purge finished
+  for(let i=bundles.length-1;i>=0;i--) if(bundles[i]._done) bundles.splice(i,1);
+
+  updateHUD(eclCount, linkCount, transit, featHops);
+}
+
+// sphere helpers for graticule
+function latLine(lat){ const pts=[]; for(let i=0;i<=48;i++){ const lon=(i/48)*2*Math.PI;
+  pts.push(vec(Math.cos(lat)*Math.cos(lon), Math.sin(lat), Math.cos(lat)*Math.sin(lon))); } return pts; }
+function lonLine(lon){ const pts=[]; for(let i=0;i<=48;i++){ const lat=-Math.PI/2+(i/48)*Math.PI;
+  pts.push(vec(Math.cos(lat)*Math.cos(lon), Math.sin(lat), Math.cos(lat)*Math.sin(lon))); } return pts; }
+function drawSpherePoly(unitPts){
+  let started=false;
+  for(let i=0;i<unitPts.length;i++){
+    const pj=project(vscale(unitPts[i],1.001));
+    if(pj.occ){ started=false; continue; }
+    if(!started){ ctx.beginPath(); ctx.moveTo(pj.x,pj.y); started=true; }
+    else ctx.lineTo(pj.x,pj.y);
+  }
+  if(started) ctx.stroke();
+}
+function drawRing(unitPts){
+  for(let i=0;i<unitPts.length-1;i++){
+    const A=project(unitPts[i]), B=project(unitPts[i+1]);
+    ctx.globalAlpha=(A.occ||B.occ)?0.12:0.4;
+    ctx.strokeStyle='#2a4870'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+}
+function liveRouteBundle(){
+  for(let i=bundles.length-1;i>=0;i--){ const b=bundles[i]; if(!b.delivered&&b.plan&&b.plan.length>=2) return b; }
+  return null;
+}
+
+// ------------------------------------------------------------------ main loop
+let lastNow=performance.now()/1000, lastDt=0;
+function frame(){
+  const t=performance.now()/1000; lastDt=Math.min(t-lastNow,0.05); lastNow=t;
+  if(playing) simT += lastDt*mult;
+  updateCamera();
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ------------------------------------------------------------------ HUD
+const el=id=>document.getElementById(id);
+function fmtClock(s){ s=Math.floor(s); const h=String(Math.floor(s/3600)).padStart(2,'0');
+  const m=String(Math.floor(s%3600/60)).padStart(2,'0'); const ss=String(s%60).padStart(2,'0'); return h+':'+m+':'+ss; }
+function updateHUD(ecl,links,transit,hops){
+  const ratio=kpi.gen?(kpi.deliv/kpi.gen*100):0;
+  el('k-ratio').textContent=kpi.gen?ratio.toFixed(1)+'%':'—';
+  el('k-deliv').textContent=kpi.deliv;
+  el('k-transit').textContent=transit;
+  el('k-gen').textContent=kpi.gen;
+  el('k-defer').textContent=kpi.defer;
+  el('k-ecl').textContent=ecl;
+  el('k-links').textContent=links;
+  el('k-hops').textContent=hops||0;
+  el('clock-t').textContent=fmtClock(simT);
+  el('clock-mult').textContent=mult+'×';
+  const sc=el('scrub'); if(document.activeElement!==sc) sc.value=Math.min(6000,Math.floor(simT));
+}
+
+el('btn-play').addEventListener('click',()=>{ playing=!playing;
+  el('btn-play').textContent=playing?'❚❚ Pause':'▶ Play'; el('btn-play').setAttribute('aria-label',playing?'Pause':'Play'); });
+el('speed').addEventListener('input',e=>{ mult=+e.target.value; });
+el('scrub').addEventListener('input',e=>{ simT=+e.target.value; lastFwd=simT; lastGen=simT; });
+function toggle(btn,key){ show[key]=!show[key]; el(btn).setAttribute('aria-pressed',show[key]); }
+el('t-orbits').addEventListener('click',()=>toggle('t-orbits','orbits'));
+el('t-links').addEventListener('click',()=>toggle('t-links','links'));
+el('t-shadow').addEventListener('click',()=>toggle('t-shadow','shadow'));
+
+el('btn-load').addEventListener('click',()=>el('file').click());
+el('file').addEventListener('change',e=>{ const f=e.target.files[0]; if(!f) return;
+  const rd=new FileReader(); rd.onload=()=>{ try{ loadData(JSON.parse(rd.result)); }catch(err){ setHint('Could not parse JSON: '+err.message,true); } };
+  rd.readAsText(f); });
+function setHint(t,warn){ const h=el('hint'); h.textContent=t; h.style.color=warn?'#ff6b6b':'#5a6b80'; }
+
+function loadData(d){
+  if(Array.isArray(d.nodes)&&d.nodes.length){
+    const nodes=[]; let src=null,dst=null;
+    d.nodes.forEach(n=>{
+      if(n.type==='ground'){
+        const lat=(n.lat||0)*Math.PI/180, lon=(n.lon||0)*Math.PI/180;
+        nodes.push(groundNode(n.id,lat,lon));
+        if(n.role==='src') src=n.id; if(n.role==='dst') dst=n.id;
+      } else {
+        const alt=((n.orbit&&n.orbit.altKm)||780)*1e3, r=RE+alt;
+        nodes.push({ id:n.id, type:'sat', r:r, omega:Math.sqrt(MU/(r*r*r)),
+          phase:((n.orbit&&n.orbit.phaseDeg)||0)*Math.PI/180,
+          raan:((n.orbit&&n.orbit.raanDeg)||0)*Math.PI/180,
+          incl:((n.orbit&&n.orbit.inclDeg)||70)*Math.PI/180, soc:(n.soc!=null?n.soc:0.8) });
+      }
+    });
+    const grounds=nodes.filter(n=>n.type==='ground');
+    S={ nodes:nodes, srcId:(src!=null?src:(grounds[0]&&grounds[0].id)),
+        dstId:(dst!=null?dst:(grounds[grounds.length-1]&&grounds[grounds.length-1].id)),
+        meta:{label:(d.meta&&d.meta.label)||'loaded scenario'} };
+    indexScenario();
+  }
+  bundles=[]; kpi={gen:0,deliv:0,defer:0}; simT=0; lastFwd=0; lastGen=0;
+  if(Array.isArray(d.events)&&d.events.length){
+    const evs=d.events.slice().sort((a,b)=>a.tSec-b.tSec);
+    const paths={};
+    evs.forEach(e=>{ if(e.type!=='tx') return; if(!paths[e.bundleId]) paths[e.bundleId]=[e.from];
+      const p=paths[e.bundleId]; if(p[p.length-1]!==e.from) p.push(e.from); p.push(e.to); });
+    replay={ events:evs, idx:0, paths:paths };
+    setHint('Replaying '+d.events.length+' events from “'+S.meta.label+'”.',false);
+  } else { replay=null; setHint('Loaded “'+S.meta.label+'”. Simulating forwarding in-browser.',false); }
+}
+
+// ------------------------------------------------------------------ pointer controls
+let drag=false, px=0, py=0;
+canvas.addEventListener('pointerdown',e=>{ drag=true; px=e.clientX; py=e.clientY; canvas.setPointerCapture(e.pointerId); });
+window.addEventListener('pointerup',()=>drag=false);
+window.addEventListener('pointermove',e=>{ if(!drag) return;
+  cam.tth-=(e.clientX-px)*0.006; cam.tph-=(e.clientY-py)*0.006;
+  cam.tph=Math.max(0.2,Math.min(Math.PI-0.2,cam.tph)); px=e.clientX; py=e.clientY; });
+canvas.addEventListener('wheel',e=>{ e.preventDefault();
+  cam.tz*= (1 - Math.sign(e.deltaY)*0.08); cam.tz=Math.max(0.55,Math.min(2.5,cam.tz)); },{passive:false});
+
+frame();
+})();
+</script>
+</body>
+</html>

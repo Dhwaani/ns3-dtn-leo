@@ -1,0 +1,37 @@
+{
+  "meta": { "label": "sample run · 2 planes × 4 sats", "durationSec": 600 },
+  "nodes": [
+    { "id": 0, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 0,   "phaseDeg": 0   }, "soc": 0.9 },
+    { "id": 1, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 0,   "phaseDeg": 90  }, "soc": 0.8 },
+    { "id": 2, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 0,   "phaseDeg": 180 }, "soc": 0.4 },
+    { "id": 3, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 0,   "phaseDeg": 270 }, "soc": 0.7 },
+    { "id": 4, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 180, "phaseDeg": 45  }, "soc": 0.9 },
+    { "id": 5, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 180, "phaseDeg": 135 }, "soc": 0.6 },
+    { "id": 6, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 180, "phaseDeg": 225 }, "soc": 0.5 },
+    { "id": 7, "type": "sat", "orbit": { "altKm": 780, "inclDeg": 70, "raanDeg": 180, "phaseDeg": 315 }, "soc": 0.8 },
+    { "id": 8, "type": "ground", "lat": 37.4,  "lon": -122.0, "role": "src" },
+    { "id": 9, "type": "ground", "lat": 1.3,   "lon": 103.8,  "role": "dst" }
+  ],
+  "events": [
+    { "tSec": 5,   "type": "tx",      "bundleId": 1, "from": 8, "to": 0, "priority": "NORMAL" },
+    { "tSec": 30,  "type": "tx",      "bundleId": 1, "from": 0, "to": 2, "priority": "NORMAL" },
+    { "tSec": 55,  "type": "defer",   "bundleId": 1, "from": 2, "to": 2, "priority": "NORMAL" },
+    { "tSec": 95,  "type": "tx",      "bundleId": 1, "from": 2, "to": 5, "priority": "NORMAL" },
+    { "tSec": 130, "type": "tx",      "bundleId": 1, "from": 5, "to": 9, "priority": "NORMAL" },
+    { "tSec": 135, "type": "deliver", "bundleId": 1, "from": 9, "to": 9, "priority": "NORMAL" },
+
+    { "tSec": 40,  "type": "tx",      "bundleId": 2, "from": 8, "to": 0, "priority": "EXPEDITED" },
+    { "tSec": 62,  "type": "tx",      "bundleId": 2, "from": 0, "to": 4, "priority": "EXPEDITED" },
+    { "tSec": 88,  "type": "tx",      "bundleId": 2, "from": 4, "to": 5, "priority": "EXPEDITED" },
+    { "tSec": 110, "type": "tx",      "bundleId": 2, "from": 5, "to": 9, "priority": "EXPEDITED" },
+    { "tSec": 114, "type": "deliver", "bundleId": 2, "from": 9, "to": 9, "priority": "EXPEDITED" },
+
+    { "tSec": 70,  "type": "tx",      "bundleId": 3, "from": 8, "to": 1, "priority": "BULK" },
+    { "tSec": 100, "type": "tx",      "bundleId": 3, "from": 1, "to": 6, "priority": "BULK" },
+    { "tSec": 120, "type": "defer",   "bundleId": 3, "from": 6, "to": 6, "priority": "BULK" },
+    { "tSec": 175, "type": "defer",   "bundleId": 3, "from": 6, "to": 6, "priority": "BULK" },
+    { "tSec": 230, "type": "tx",      "bundleId": 3, "from": 6, "to": 7, "priority": "BULK" },
+    { "tSec": 280, "type": "tx",      "bundleId": 3, "from": 7, "to": 9, "priority": "BULK" },
+    { "tSec": 285, "type": "deliver", "bundleId": 3, "from": 9, "to": 9, "priority": "BULK" }
+  ]
+}
