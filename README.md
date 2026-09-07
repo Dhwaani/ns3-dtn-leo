@@ -78,7 +78,7 @@ load a JSON export of a real ns-3 run to replay it — the example writes
 
 ## License
 
-GPL-2.0-only, matching ns-3. See [`LICENSE`](LICENSE).
+GPL-3.0-only, matching ns-3. See [`LICENSE`](LICENSE).
 
 ## Citing / prior art
 
