@@ -81,7 +81,7 @@ Nothing in `model/` or `helper/` changes — only the oracle you pass in. This i
 the intended integration seam; the exact `leo` API calls are the one place you
 should expect to adapt to your ns-3.48 checkout.
 
-## 7. Cross-validating against ION-DTN (optional but recommended)
+## 7. Cross-validating against ION-DTN (optional)
 
 Because the module emits an ION-format contact plan and uses `ipn` EIDs, you can
 feed the same contact plan to NASA JPL's ION and compare CGR route choices and
